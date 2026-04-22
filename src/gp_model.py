@@ -8,16 +8,20 @@ from sklearn.gaussian_process.kernels import ConstantKernel, Matern, WhiteKernel
 from sklearn.model_selection import LeaveOneOut
 from sklearn.preprocessing import StandardScaler
 
-_N_FEATURES = 2
+try:
+    from .config import get_feature_count
+except ImportError:  # pragma: no cover - fallback for direct script execution
+    from config import get_feature_count
+
 _Y_STD_FLOOR = 1e-8
 
 
-def _build_kernel() -> ConstantKernel | Matern | WhiteKernel:
+def _build_kernel(n_features: int) -> ConstantKernel | Matern | WhiteKernel:
     """Create the kernel that tells the GP how to model the data."""
     return (
         ConstantKernel(1.0, constant_value_bounds=(1e-3, 1e3))
         * Matern(
-            length_scale=[1.0, 1.0],
+            length_scale=np.ones(n_features, dtype=float),
             length_scale_bounds=(1e-2, 1e2),
             nu=2.5,
         )
@@ -28,31 +32,36 @@ def _build_kernel() -> ConstantKernel | Matern | WhiteKernel:
 class FuelCellSurrogate:
     """A small wrapper around scikit-learn's GP model for this project."""
 
-    def __init__(self, n_restarts_optimizer: int = 10, random_state: int = 0):
+    def __init__(
+        self,
+        n_features: int | None = None,
+        n_restarts_optimizer: int = 10,
+        random_state: int = 0,
+    ):
+        self.n_features = get_feature_count() if n_features is None else n_features
         # Scale inputs and outputs so the GP fits more reliably.
         self.scaler_X = StandardScaler()
         self.scaler_y = StandardScaler()
         self.gp = GaussianProcessRegressor(
-            kernel=_build_kernel(),
+            kernel=_build_kernel(self.n_features),
             n_restarts_optimizer=n_restarts_optimizer,
             normalize_y=False,
             random_state=random_state,
         )
         self._is_fitted = False
 
-    @staticmethod
-    def _as_feature_matrix(X: np.ndarray, *, name: str) -> np.ndarray:
-        """Make sure feature data looks like a 2-column numeric table."""
+    def _as_feature_matrix(self, X: np.ndarray, *, name: str) -> np.ndarray:
+        """Make sure feature data looks like a numeric table with the right width."""
         array = np.asarray(X, dtype=float)
         if array.ndim == 1:
-            if array.shape[0] != _N_FEATURES:
+            if array.shape[0] != self.n_features:
                 raise ValueError(
-                    f"{name} must contain {_N_FEATURES} features per observation."
+                    f"{name} must contain {self.n_features} features per observation."
                 )
             array = array.reshape(1, -1)
-        if array.ndim != 2 or array.shape[1] != _N_FEATURES:
+        if array.ndim != 2 or array.shape[1] != self.n_features:
             raise ValueError(
-                f"{name} must have shape (n_samples, {_N_FEATURES})."
+                f"{name} must have shape (n_samples, {self.n_features})."
             )
         return array
 
@@ -75,7 +84,7 @@ class FuelCellSurrogate:
             raise ValueError("At least two observations are required to fit the GP.")
         if np.std(y_array) < _Y_STD_FLOOR:
             raise ValueError(
-                "All voltages are identical (std ~= 0). Need distinct readings "
+                "All target values are identical (std ~= 0). Need distinct readings "
                 "to fit a meaningful response surface."
             )
 
@@ -88,7 +97,7 @@ class FuelCellSurrogate:
     def predict(
         self, X_query: np.ndarray, return_std: bool = True
     ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
-        """Predict voltage for one or more candidate experiments."""
+        """Predict the target value for one or more candidate experiments."""
         if not self._is_fitted:
             raise RuntimeError("Call fit() before predict().")
 
@@ -98,7 +107,7 @@ class FuelCellSurrogate:
         if return_std:
             mu_scaled, sigma_scaled = self.gp.predict(X_scaled, return_std=True)
             mu = self.scaler_y.inverse_transform(mu_scaled.reshape(-1, 1)).ravel()
-            # Convert uncertainty back to the original voltage scale.
+            # Convert uncertainty back to the original target scale.
             sigma = sigma_scaled * self.scaler_y.scale_[0]
             return mu, sigma
 
@@ -126,6 +135,7 @@ class FuelCellSurrogate:
         for index, (train_idx, test_idx) in enumerate(LeaveOneOut().split(X_array)):
             # Refit on all rows except one, then predict the held-out row.
             fold = FuelCellSurrogate(
+                n_features=self.n_features,
                 n_restarts_optimizer=self.gp.n_restarts_optimizer,
                 random_state=self.gp.random_state,
             )

@@ -3,25 +3,26 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final
 import warnings
 
 import numpy as np
 import pandas as pd
 
-FEATURE_COLUMNS: Final[tuple[str, str]] = ("TiO2_Loading", "RH")
-TARGET_COLUMN: Final[str] = "Voltage_1.5A"
-EXPECTED_COLUMNS: Final[tuple[str, ...]] = (*FEATURE_COLUMNS, TARGET_COLUMN)
+try:
+    from .config import FEATURE_COLUMNS, TARGET_COLUMN, get_expected_columns
+except ImportError:  # pragma: no cover - fallback for direct script execution
+    from config import FEATURE_COLUMNS, TARGET_COLUMN, get_expected_columns
 
 
 def _coerce_frame(frame: pd.DataFrame, source: Path) -> pd.DataFrame:
     """Keep only the required columns and drop rows that are unusable."""
-    missing = [column for column in EXPECTED_COLUMNS if column not in frame.columns]
+    expected_columns = get_expected_columns()
+    missing = [column for column in expected_columns if column not in frame.columns]
     if missing:
         missing_text = ", ".join(missing)
         raise KeyError(f"{source} is missing required column(s): {missing_text}")
 
-    numeric = frame.loc[:, EXPECTED_COLUMNS].apply(pd.to_numeric, errors="coerce")
+    numeric = frame.loc[:, expected_columns].apply(pd.to_numeric, errors="coerce")
     clean = numeric.replace([np.inf, -np.inf], np.nan).dropna()
 
     if clean.empty:
@@ -47,12 +48,12 @@ def load_and_sanitize_data(
 
     The function:
     - looks for CSV files in ``raw_data_dir``
-    - keeps only the three required columns
+    - keeps only the configured input and target columns
     - converts values to numbers when possible
     - drops rows with missing or invalid values
     - saves the final arrays to ``processed_dir``
 
-    Returns ``X`` with the two input columns and ``y`` with the voltage values.
+    Returns ``X`` with the configured input columns and ``y`` with the target values.
     """
     raw_dir = Path(raw_data_dir)
     csv_files = sorted(raw_dir.glob("*.csv"))
@@ -78,12 +79,12 @@ def load_and_sanitize_data(
     if not frames:
         raise ValueError(
             "No usable rows were found after validation. Expected numeric columns: "
-            + ", ".join(EXPECTED_COLUMNS)
+            + ", ".join(get_expected_columns())
         )
 
     # Combine all usable rows into one table before splitting inputs and target.
     master = pd.concat(frames, ignore_index=True)
-    X = master.loc[:, FEATURE_COLUMNS].to_numpy(dtype=float)
+    X = master.loc[:, list(FEATURE_COLUMNS)].to_numpy(dtype=float)
     y = master.loc[:, TARGET_COLUMN].to_numpy(dtype=float)
 
     if X.ndim != 2 or X.shape[1] != len(FEATURE_COLUMNS) or len(X) != len(y):
@@ -101,7 +102,10 @@ if __name__ == "__main__":
     X, y = load_and_sanitize_data("data/raw", "data/processed")
     print(f"Loaded {len(y)} observations.")
     print(f"X shape: {X.shape}  y shape: {y.shape}")
-    print(f"TiO2_Loading range: [{X[:, 0].min():.3f}, {X[:, 0].max():.3f}]")
-    print(f"RH range:           [{X[:, 1].min():.1f}, {X[:, 1].max():.1f}]")
-    print(f"Voltage range:      [{y.min():.4f}, {y.max():.4f}]")
+    for index, feature_name in enumerate(FEATURE_COLUMNS):
+        print(
+            f"{feature_name} range: "
+            f"[{X[:, index].min():.4f}, {X[:, index].max():.4f}]"
+        )
+    print(f"{TARGET_COLUMN} range: [{y.min():.4f}, {y.max():.4f}]")
     print("Saved X_train.npy and y_train.npy to data/processed/")

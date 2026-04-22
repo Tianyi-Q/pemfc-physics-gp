@@ -5,5 +5,8 @@ __pycache__/
 
 .venv/
 venv/
+.vscode/
+.idea/
 
-data/processed/*.npy
+# Generated training arrays
+/data/processed/*.npy
